@@ -87,6 +87,7 @@
 #include <linux/slab.h>
 #include <linux/flex_array.h>
 #include <linux/posix-timers.h>
+#include <linux/cpufreq_times.h>
 #ifdef CONFIG_HARDWALL
 #include <asm/hardwall.h>
 #endif
@@ -1118,9 +1119,10 @@ static ssize_t oom_adj_write(struct file *file, const char __user *buf,
 	pr_warn_once("%s (%d): /proc/%d/oom_adj is deprecated, please use /proc/%d/oom_score_adj instead.\n",
 		  current->comm, task_pid_nr(current), task_pid_nr(task),
 		  task_pid_nr(task));
-
-	task->signal->oom_score_adj = oom_adj;
-	trace_oom_score_adj_update(task);
+	if (task->tgid == task->pid) {
+		task->signal->oom_score_adj = oom_adj;
+		trace_oom_score_adj_update(task);
+	}
 err_sighand:
 	unlock_task_sighand(task, &flags);
 err_task_lock:
@@ -1205,10 +1207,12 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 		goto err_sighand;
 	}
 
-	task->signal->oom_score_adj = (short)oom_score_adj;
-	if (has_capability_noaudit(current, CAP_SYS_RESOURCE))
-		task->signal->oom_score_adj_min = (short)oom_score_adj;
-	trace_oom_score_adj_update(task);
+	if (task->tgid == task->pid) {
+		task->signal->oom_score_adj = (short)oom_score_adj;
+		if (has_capability_noaudit(current, CAP_SYS_RESOURCE))
+			task->signal->oom_score_adj_min = (short)oom_score_adj;
+		trace_oom_score_adj_update(task);
+	}
 
 err_sighand:
 	unlock_task_sighand(task, &flags);
@@ -2274,6 +2278,92 @@ static const struct file_operations proc_timers_operations = {
 	.release	= seq_release_private,
 };
 
+static ssize_t timerslack_ns_write(struct file *file, const char __user *buf,
+					size_t count, loff_t *offset)
+{
+	struct inode *inode = file_inode(file);
+	struct task_struct *p;
+	u64 slack_ns;
+	int err;
+
+	err = kstrtoull_from_user(buf, count, 10, &slack_ns);
+	if (err < 0)
+		return err;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+
+	if (p != current) {
+		if (!capable(CAP_SYS_NICE)) {
+			count = -EPERM;
+			goto out;
+		}
+
+		err = security_task_setscheduler(p);
+		if (err) {
+			count = err;
+			goto out;
+		}
+	}
+
+	task_lock(p);
+	if (slack_ns == 0)
+		p->timer_slack_ns = p->default_timer_slack_ns;
+	else
+		p->timer_slack_ns = slack_ns;
+	task_unlock(p);
+
+out:
+	put_task_struct(p);
+
+	return count;
+}
+
+static int timerslack_ns_show(struct seq_file *m, void *v)
+{
+	struct inode *inode = m->private;
+	struct task_struct *p;
+	int err = 0;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+
+	if (p != current) {
+
+		if (!capable(CAP_SYS_NICE)) {
+			err = -EPERM;
+			goto out;
+		}
+		err = security_task_getscheduler(p);
+		if (err)
+			goto out;
+	}
+
+	task_lock(p);
+	seq_printf(m, "%llu\n", p->timer_slack_ns);
+	task_unlock(p);
+
+out:
+	put_task_struct(p);
+
+	return err;
+}
+
+static int timerslack_ns_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, timerslack_ns_show, inode);
+}
+
+static const struct file_operations proc_pid_set_timerslack_ns_operations = {
+	.open		= timerslack_ns_open,
+	.read		= seq_read,
+	.write		= timerslack_ns_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int proc_pident_instantiate(struct inode *dir,
 	struct dentry *dentry, struct task_struct *task, const void *ptr)
 {
@@ -2851,6 +2941,10 @@ static const struct pid_entry tgid_base_stuff[] = {
 #ifdef CONFIG_CHECKPOINT_RESTORE
 	REG("timers",	  S_IRUGO, proc_timers_operations),
 #endif
+	REG("timerslack_ns", S_IRUGO|S_IWUGO, proc_pid_set_timerslack_ns_operations),
+#ifdef CONFIG_CPU_FREQ_TIMES
+	ONE("time_in_state", 0444, proc_time_in_state_show),
+#endif
 };
 
 static int proc_tgid_base_readdir(struct file *file, struct dir_context *ctx)
@@ -3234,6 +3328,9 @@ static const struct pid_entry tid_base_stuff[] = {
 	REG("gid_map",    S_IRUGO|S_IWUSR, proc_gid_map_operations),
 	REG("projid_map", S_IRUGO|S_IWUSR, proc_projid_map_operations),
 	REG("setgroups",  S_IRUGO|S_IWUSR, proc_setgroups_operations),
+#endif
+#ifdef CONFIG_CPU_FREQ_TIMES
+	ONE("time_in_state", 0444, proc_time_in_state_show),
 #endif
 };
 
