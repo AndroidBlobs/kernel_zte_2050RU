@@ -44,6 +44,18 @@
 #include <asm/siginfo.h>
 #include <asm/cacheflush.h>
 #include "audit.h"	/* audit_signal_info() */
+/**** ZSW_ADD FOR CPUFREEZER begin ****/
+#include <stdbool.h>
+
+#ifndef ZTE_FEATURE_CGROUP_FREEZER
+#define ZTE_FEATURE_CGROUP_FREEZER               false
+#endif
+
+#ifndef ZTE_FEATURE_CGROUP_FREEZER_V2
+#define ZTE_FEATURE_CGROUP_FREEZER_V2            false
+#endif
+
+/**** ZSW_ADD FOR CPUFREEZER end ****/
 
 /*
  * SLAB caches for signal bits.
@@ -798,8 +810,10 @@ static bool prepare_signal(int sig, struct task_struct *p, bool force)
 	sigset_t flush;
 
 	if (signal->flags & (SIGNAL_GROUP_EXIT | SIGNAL_GROUP_COREDUMP)) {
-		if (!(signal->flags & SIGNAL_GROUP_EXIT))
-			return sig == SIGKILL;
+		if (signal->flags & SIGNAL_GROUP_COREDUMP) {
+			pr_debug("[%d:%s] is in the middle of doing coredump so skip sig %d\n", p->pid, p->comm, sig);
+			return 0;
+		}
 		/*
 		 * The process is in the middle of dying, nothing to do.
 		 */
@@ -1092,7 +1106,16 @@ static int send_signal(int sig, struct siginfo *info, struct task_struct *t,
 	from_ancestor_ns = si_fromuser(info) &&
 			   !task_pid_nr_ns(current, task_active_pid_ns(t));
 #endif
-
+/* ZSW_ADD FOR CPUFREEZER begin */
+#if (ZTE_FEATURE_CGROUP_FREEZER == true || ZTE_FEATURE_CGROUP_FREEZER_V2 == true)
+	if (sig == SIGKILL) {
+		if (cgroup_needunfreeze_task(t)) {
+			cgroup_signal_unfreeze(t);
+			pr_info("kill task %d  need to unfreeze\n", t->pid);
+		}
+	}
+#endif
+/* ZSW_ADD FOR CPUFREEZER end */
 	return __send_signal(sig, info, t, group, from_ancestor_ns);
 }
 
