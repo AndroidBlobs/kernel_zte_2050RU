@@ -220,6 +220,7 @@ static struct cpu_attr cpu_attrs[] = {
 	_CPU_ATTR(online, &cpu_online_mask),
 	_CPU_ATTR(possible, &cpu_possible_mask),
 	_CPU_ATTR(present, &cpu_present_mask),
+	_CPU_ATTR(sched_isolated, &cpu_isolated_mask),
 };
 
 /*
@@ -454,6 +455,7 @@ static struct attribute *cpu_root_attrs[] = {
 	&cpu_attrs[0].attr.attr,
 	&cpu_attrs[1].attr.attr,
 	&cpu_attrs[2].attr.attr,
+	&cpu_attrs[3].attr.attr,
 	&dev_attr_kernel_max.attr,
 	&dev_attr_offline.attr,
 	&dev_attr_isolated.attr,
@@ -498,6 +500,30 @@ static void __init cpu_dev_register_generic(void)
 #endif
 }
 
+
+static int device_hotplug_notifier(struct notifier_block *nfb, unsigned long action, void *hcpu)
+{
+	unsigned int cpu = (unsigned long)hcpu;
+	struct device *dev = get_cpu_device(cpu);
+	int ret;
+
+	switch (action & ~CPU_TASKS_FROZEN) {
+	case CPU_ONLINE:
+		dev->offline = false;
+		ret = NOTIFY_OK;
+		break;
+	case CPU_DYING:
+		dev->offline = true;
+		ret = NOTIFY_OK;
+		break;
+	default:
+		ret = NOTIFY_DONE;
+		break;
+	}
+
+	return ret;
+}
+
 #ifdef CONFIG_GENERIC_CPU_VULNERABILITIES
 
 ssize_t __weak cpu_show_meltdown(struct device *dev,
@@ -524,24 +550,16 @@ ssize_t __weak cpu_show_spec_store_bypass(struct device *dev,
 	return sprintf(buf, "Not affected\n");
 }
 
-ssize_t __weak cpu_show_l1tf(struct device *dev,
-			     struct device_attribute *attr, char *buf)
-{
-	return sprintf(buf, "Not affected\n");
-}
-
 static DEVICE_ATTR(meltdown, 0444, cpu_show_meltdown, NULL);
 static DEVICE_ATTR(spectre_v1, 0444, cpu_show_spectre_v1, NULL);
 static DEVICE_ATTR(spectre_v2, 0444, cpu_show_spectre_v2, NULL);
 static DEVICE_ATTR(spec_store_bypass, 0444, cpu_show_spec_store_bypass, NULL);
-static DEVICE_ATTR(l1tf, 0444, cpu_show_l1tf, NULL);
 
 static struct attribute *cpu_root_vulnerabilities_attrs[] = {
 	&dev_attr_meltdown.attr,
 	&dev_attr_spectre_v1.attr,
 	&dev_attr_spectre_v2.attr,
 	&dev_attr_spec_store_bypass.attr,
-	&dev_attr_l1tf.attr,
 	NULL
 };
 
@@ -567,5 +585,8 @@ void __init cpu_dev_init(void)
 		panic("Failed to register CPU subsystem");
 
 	cpu_dev_register_generic();
+
+	cpu_notifier(device_hotplug_notifier, 0);
+
 	cpu_register_vulnerabilities();
 }
