@@ -49,6 +49,7 @@
 #include <linux/kdebug.h>
 #include <linux/kallsyms.h>
 #include <linux/ftrace.h>
+#include <linux/kasan.h>
 #include <linux/moduleloader.h>
 
 #include <asm/cacheflush.h>
@@ -393,6 +394,7 @@ int __copy_instruction(u8 *dest, u8 *src)
 		newdisp = (u8 *) src + (s64) insn.displacement.value - (u8 *) dest;
 		if ((s64) (s32) newdisp != newdisp) {
 			pr_err("Kprobes error: new displacement does not fit into s32 (%llx)\n", newdisp);
+			pr_err("\tSrc: %p, Dest: %p, old disp: %x\n", src, dest, insn.displacement.value);
 			return 0;
 		}
 		disp = (u8 *) dest + insn_offset_displacement(&insn);
@@ -608,7 +610,8 @@ static int reenter_kprobe(struct kprobe *p, struct pt_regs *regs,
 		 * Raise a BUG or we'll continue in an endless reentering loop
 		 * and eventually a stack overflow.
 		 */
-		pr_err("Unrecoverable kprobe detected.\n");
+		printk(KERN_WARNING "Unrecoverable kprobe detected at %p.\n",
+		       p->addr);
 		dump_kprobe(p);
 		BUG();
 	default:
@@ -1088,6 +1091,9 @@ NOKPROBE_SYMBOL(setjmp_pre_handler);
 void jprobe_return(void)
 {
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+
+	/* Unpoison stack redzones in the frames we are going to jump over. */
+	kasan_unpoison_stack_above_sp_to(kcb->jprobe_saved_sp);
 
 	asm volatile (
 #ifdef CONFIG_X86_64
