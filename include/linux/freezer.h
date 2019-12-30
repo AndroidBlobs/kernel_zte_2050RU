@@ -78,6 +78,14 @@ static inline bool cgroup_freezing(struct task_struct *task)
 }
 #endif /* !CONFIG_CGROUP_FREEZER */
 
+/* ZSW_ADD FOR CPUFREEZER begin */
+extern void cgroup_network_unfreeze(unsigned int uid);
+extern void cgroup_signal_unfreeze(struct task_struct *task);
+extern void cgroup_binder_unfreeze(struct task_struct *task);
+extern bool cgroup_needunfreeze_task(struct task_struct *task);
+extern bool cgroup_needunfreeze_uid(unsigned int uid);
+/* ZSW_ADD FOR CPUFREEZER end */
+
 /*
  * The PF_FREEZER_SKIP flag should be set by a vfork parent right before it
  * calls wait_for_completion(&vfork) and reset right after it returns from this
@@ -231,7 +239,7 @@ static inline long freezable_schedule_timeout_killable_unsafe(long timeout)
  * call this with locks held.
  */
 static inline int freezable_schedule_hrtimeout_range(ktime_t *expires,
-		unsigned long delta, const enum hrtimer_mode mode)
+		u64 delta, const enum hrtimer_mode mode)
 {
 	int __retval;
 	freezer_do_not_count();
